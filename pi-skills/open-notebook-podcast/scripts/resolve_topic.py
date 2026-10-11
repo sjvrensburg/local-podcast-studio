@@ -34,13 +34,19 @@ age = (dt.date.today() - date).days
 if age > 1:
     die(f"newest shortlist is {path} ({age} days old). Do NOT guess; ask the user which topic they mean.")
 
+# The shortlist is model-written and its item format drifts between days: "## 1. T" (most),
+# "### 1. T" (2026-10-11), "**1. T**" (10-03, 10-07), and sources as bare "- https://…" or as
+# "- [title](https://…)" (10-07, 10-08). Until 2026-10-11 only "## " and bare URLs parsed, so
+# 3 of 10 shortlists refused every "#N" reply and linked sources were silently dropped. The job
+# prompt now pins the format; this stays tolerant anyway, because a refusal costs an episode.
+ITEM = re.compile(r"(?m)^(?:#{2,4}[ \t]+(?:\*\*)?|\*\*)(?=\d+\.[ \t])")
 items = {}
-for blk in re.split(r"(?m)^## (?=\d+\. )", open(path).read())[1:]:
+for blk in ITEM.split(open(path).read())[1:]:
     head, _, body = blk.partition("\n")
     n, title = head.split(". ", 1)
-    urls = re.findall(r"^- (https?://\S+)", body, re.M)
+    urls = re.findall(r"^[-*] (?:\[[^\]]*\]\()?(https?://[^\s)]+)", body, re.M)
     desc = re.split(r"\n\s*Sources?:", body)[0].strip()
-    items[int(n)] = (title.strip(), urls, desc)
+    items[int(n)] = (title.strip().strip("*").strip(), urls, desc)
 if not items: die(f"no numbered items parsed from {path}")
 
 if query.isdigit():
