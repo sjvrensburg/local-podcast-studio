@@ -35,6 +35,9 @@ Before generating, the whole notebook is token-counted against the language
 model's own window. If it leaves less than RESERVE_TOKENS for the outline and
 transcript, nothing is generated and stderr lists the sources by size.
 
+An episode whose --name matches one whose poller is still running is refused
+before anything is created: exit 0 is final for a request, not a draft to improve.
+
 Prints a JSON summary on stdout. Exit 0 = generation started and the poller is
 running. Non-zero = nothing was generated; stderr says why.
 """
@@ -107,6 +110,36 @@ def call(method, path, body=None, timeout=60, retries=4):
             die(f"{method} {path} -> HTTP {e.code}: {detail}")
         except urllib.error.URLError as e:
             die(f"{method} {path} -> {e.reason} (is Open Notebook up? docker ps | grep open-notebook)")
+
+
+# The poller unit's Description carries the episode name, so a second launch for the
+# same request can be found while the first is still generating. On 2026-10-16 the
+# agent read an 8.6K-token notebook as "under the 32K floor" (the 32K is what the
+# sources must LEAVE free, not a minimum), ran this script again with one more source,
+# and the user got two near-identical episodes from two pollers ~2 minutes apart.
+POLLER_DESC = "podcast: "
+
+
+def norm(name):
+    return " ".join(name.casefold().split())
+
+
+def running_episode(name):
+    """Return the active poller unit already generating `name`, or None."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "list-units", "podcast-poller-*",
+                            "--state=active", "--plain", "--no-legend",
+                            "--output=json"], capture_output=True, text=True, timeout=10)
+        units = json.loads(r.stdout or "[]")
+    except Exception as e:  # noqa: BLE001 - systemd unreadable: say so, do not block
+        print(f"make_podcast: could not list running pollers ({e}); "
+              "duplicate check skipped", file=sys.stderr)
+        return None
+    for u in units:
+        desc = u.get("description", "")
+        if desc.startswith(POLLER_DESC) and norm(desc[len(POLLER_DESC):]) == norm(name):
+            return u.get("unit")
+    return None
 
 
 def split_title(arg):
@@ -199,6 +232,11 @@ def main():
 
     if not a.doc and not a.url and not a.notebook:
         die("no sources: pass --doc and/or --url")
+    if not a.no_generate and (unit := running_episode(a.name)):
+        die(f"an episode named {a.name!r} is already generating ({unit}); its poller "
+            "will deliver it. Nothing was created. Do not run this again for the same "
+            "request, even with more sources: that sends the user a second episode. Tell "
+            "the user it is on its way.")
     try:
         urllib.request.urlopen(API + "/health", timeout=10).read()
     except Exception as e:  # noqa: BLE001 - any failure here means "down"
@@ -302,6 +340,7 @@ def main():
     unit = f"podcast-poller-{int(time.time())}"
     path = f"{Path.home()}/.local/bin:/usr/local/bin:/usr/bin:/bin"
     r = subprocess.run(["systemd-run", "--user", "--collect", f"--unit={unit}",
+                        f"--description={POLLER_DESC}{a.name}",
                         f"--setenv=PATH={path}", "/bin/bash", str(POLLER),
                         job_id, a.name, "signal"], capture_output=True, text=True)
     if r.returncode != 0:
