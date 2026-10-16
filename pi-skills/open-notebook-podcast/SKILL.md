@@ -57,10 +57,12 @@ script and listed in its output.
 
 **Size matters as much as relevance.** Every source's full text goes into every outline and
 transcript call, and the model's window is 131,072 tokens. The script refuses to generate when
-the sources leave less than 32K of it, and lists them by size. Prefer focused pages (a repo
-README, an article, a spec page) over whole forum threads: on 2026-10-10 two Hacker News threads
-that never mentioned the topic were 108K of 128K tokens, and the outline was cut off. When the
-script refuses, drop the largest off-topic source; do not retry the same list.
+the sources are too BIG, leaving less than 32K of the window free, and lists them by size.
+There is no minimum: a notebook of 8K tokens is fine, and the script decides that, not you.
+Prefer focused pages (a repo README, an article, a spec page) over whole forum threads: on
+2026-10-10 two Hacker News threads that never mentioned the topic were 108K of 128K tokens, and
+the outline was cut off. When the script refuses, drop the largest off-topic source; do not
+retry the same list.
 
 ## 2. Profile
 
@@ -86,11 +88,15 @@ python3 ~/.pi/agent/skills/open-notebook-podcast/scripts/make_podcast.py \
   --url "https://...::Short title" --url "https://...::Short title"
 ```
 
-It takes ~10-60 s (waiting for extraction) and prints JSON: the notebook, the sources kept
-with their character counts, those dropped, and the `job_id`. **A non-zero exit means nothing
-was generated**; relay its message and fix the cause (usually: find better sources). Never
-work around it by calling the Open Notebook API yourself: every check in it exists because an
-episode once shipped built on nothing.
+It takes ~10-60 s (waiting for extraction) and prints JSON: the notebook, the sources kept with
+their character counts, those dropped, and the `job_id`. **Exit 0 is final**: the episode is
+generating and its poller will deliver it. Do not run the script again for the same request,
+not even with more or better sources; a second run is a second episode on the user's phone
+(2026-10-16), and the script refuses a repeat `--name` while the first is still generating. If
+sources were dropped, say so in your reply. **A non-zero exit means nothing was generated**;
+relay its message and fix the cause (usually: find better sources). Never work around it by
+calling the Open Notebook API yourself: every check in it exists because an episode once
+shipped built on nothing.
 
 **The briefing is instructions, not content.** If the material to answer a question is not in
 the sources, putting the question in `--briefing` does not research it; it tells the model to
