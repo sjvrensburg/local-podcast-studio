@@ -73,7 +73,9 @@ retry the same list.
 | `business_analysis` | 3 | Explicitly business/market/strategy topics |
 | `deep_dive` | 2 (10 segments) | Long-form; normally reached via `deep-research-podcast` |
 
-All are voiced by Kokoro (the operator's choice since 2026-09-24). Do not create profiles, and
+All are voiced by Kokoro (the operator's choice since 2026-09-24). Where halo-prep's
+`drama-revoice.py` exists, the poller then re-renders the finished script with Fish Drama 3 in
+fixed voices and delivers that instead, keeping Kokoro's file as the fallback. Do not create profiles, and
 do not use a `_vibevoice` one: the script refuses them, because nothing starts that TTS server
 for podcasts any more. Format is low-stakes; don't ask about it.
 
@@ -109,7 +111,8 @@ episode model treats the briefing as ground truth.
 ## 4. Reply and stop
 
 Tell the user, in one short message: generation started, which sources are in it (from the
-JSON, and any dropped), and that it takes roughly 20-60 minutes. The poller sends its own
+JSON, and any dropped), and that it takes roughly 30-90 minutes (Drama 3 voicing adds about two
+thirds of the episode's length). The poller sends its own
 message with the real segment count, then the audio file when done, or the error if it fails.
 Do not wait for it.
 
