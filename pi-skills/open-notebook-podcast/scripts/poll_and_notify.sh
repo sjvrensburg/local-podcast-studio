@@ -29,7 +29,7 @@ JOB_ID="${1:?usage: poll_and_notify.sh <job_id> <episode_name> [deliver_target]}
 EPISODE_NAME="${2:?usage: poll_and_notify.sh <job_id> <episode_name> [deliver_target]}"
 DELIVER_TARGET="${3:-signal}"
 
-API="http://127.0.0.1:5055/api"
+API="${ON_API:-http://127.0.0.1:5055/api}"   # overridable for testing against a stub
 PODCASTS_DIR="${HOME}/Music/open-notebook-podcasts"
 FAIL_LOG="${HOME}/.local/state/pi-jobs/podcast-notify-failures.log"
 CONTAINER="${ON_CONTAINER:-open-notebook}"
@@ -46,6 +46,9 @@ STALL_SECS="${STALL_SECS:-1500}"
 # Set PROGRESS_PINGS=1 to get a Signal message at every segment boundary.
 # Off by default: a 7-segment episode would be 7 pings for no decision value.
 PROGRESS_PINGS="${PROGRESS_PINGS:-0}"
+# The Drama 3 re-voice tool (see the "completed" branch below). Like the lease helper, a path
+# into halo-prep, overridable; a missing or non-executable file means Kokoro only.
+DRAMA_REVOICE="${DRAMA_REVOICE:-${HOME}/Projects/halo-prep/scripts/drama-revoice.py}"
 
 START_TS="$(date +%s)"
 
@@ -285,6 +288,25 @@ while true; do
             exit 0
         fi
         audio_path="${PODCASTS_DIR}/${rel_path}"
+        # ── Drama 3 re-voice (on the EVO-X3, since 2026-10-18) ──
+        # Open Notebook voices the episode with Kokoro; where halo-prep's drama-revoice exists,
+        # the finished transcript is rendered again with Fish Drama 3 in locked voices and THAT
+        # file is delivered. Kokoro's file stays the fallback: if the re-voice fails (not enough
+        # memory, a turn that keeps running away), the Kokoro audio is sent with a note. It adds
+        # roughly two thirds of the episode's length. PODCAST_DRAMA=0 turns it off.
+        if [ "${PODCAST_DRAMA:-1}" = "1" ] && [ -x "${DRAMA_REVOICE}" ] && [ -f "${audio_path}" ]; then
+            notify "🎙️ \"${EPISODE_NAME}\": the script is done. Rendering it with Drama 3 voices now, which takes about two thirds of the episode's length. I'll send it when it's ready."
+            drama_out="$("${DRAMA_REVOICE}" --by-audio "${rel_path}" 2>&1)"; drama_rc=$?
+            log "drama-revoice rc=${drama_rc}: $(printf '%s' "${drama_out}" | tail -n 3 | tr '\n' ' ')"
+            drama_path="$(printf '%s' "${drama_out}" | sed -n 's/^wrote \(.*\) in [0-9]* s$/\1/p' | tail -n1)"
+            if [ "${drama_rc}" -eq 0 ] && [ -f "${drama_path}" ]; then
+                notify "🎙️ Your podcast \"${EPISODE_NAME}\" is ready."
+                notify "MEDIA:${drama_path}"
+                log "done in $(( ($(date +%s) - START_TS) / 60 ))m (Drama 3)"
+                exit 0
+            fi
+            notify "The Drama 3 render of \"${EPISODE_NAME}\" failed ($(printf '%s' "${drama_out}" | tail -n1 | cut -c1-200)). Sending the Kokoro version instead."
+        fi
         notify "🎙️ Your podcast \"${EPISODE_NAME}\" is ready."
         if [ -f "${audio_path}" ]; then
             notify "MEDIA:${audio_path}"
