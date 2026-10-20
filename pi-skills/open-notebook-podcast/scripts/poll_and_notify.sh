@@ -30,9 +30,8 @@ EPISODE_NAME="${2:?usage: poll_and_notify.sh <job_id> <episode_name> [deliver_ta
 DELIVER_TARGET="${3:-signal}"
 
 API="${ON_API:-http://127.0.0.1:5055/api}"   # overridable for testing against a stub
-PODCASTS_DIR="${HOME}/Music/open-notebook-podcasts"
+PODCASTS_DIR="${ON_PODCASTS_DIR:-${HOME}/Music/open-notebook-podcasts}"   # likewise
 FAIL_LOG="${HOME}/.local/state/pi-jobs/podcast-notify-failures.log"
-CONTAINER="${ON_CONTAINER:-open-notebook}"
 
 # Wall-clock budget rather than a poll count, so changing the interval schedule
 # below can't silently change how long we wait. 3h soft (warn, keep watching),
@@ -40,12 +39,10 @@ CONTAINER="${ON_CONTAINER:-open-notebook}"
 # run as stuck, so the soft mark warns instead of abandoning.
 SOFT_CEILING_SECS="${SOFT_CEILING_SECS:-10800}"
 HARD_CEILING_SECS="${HARD_CEILING_SECS:-21600}"
-# No new "segment N/M" line for this long => probably wedged. Segments observed
-# at ~3-4 min each on this box, so 25 min is ~7x the normal gap.
+# No new audio clip for this long => probably wedged. With Claude writing, outline + transcript
+# took ~1-2.5 min before the first clip (four episodes, 2026-10-16/17) and clips then arrive
+# every few seconds, so 25 min is generous; it was sized for the Ornith era's 3-4 min segments.
 STALL_SECS="${STALL_SECS:-1500}"
-# Set PROGRESS_PINGS=1 to get a Signal message at every segment boundary.
-# Off by default: a 7-segment episode would be 7 pings for no decision value.
-PROGRESS_PINGS="${PROGRESS_PINGS:-0}"
 # The Drama 3 re-voice tool (see the "completed" branch below). Like the lease helper, a path
 # into halo-prep, overridable; a missing or non-executable file means Kokoro only.
 DRAMA_REVOICE="${DRAMA_REVOICE:-${HOME}/Projects/halo-prep/scripts/drama-revoice.py}"
@@ -180,52 +177,38 @@ audio_path_from_job() {
 }
 
 # ── Progress signal ──────────────────────────────────────────────────────
-# The episode object is useless for this: `outline` and `transcript` stay empty
-# for the whole run and only populate at completion (verified against a live
-# job and two finished ones). The container log is the only real progress
-# source — it emits "Generating transcript for segment N/M".
+# Files on the host, not the API and (since 2026-10-20) not the container log.
+#   - The API has no progress: the job's `progress` field is never set, and the episode's
+#     `outline` and `transcript` populate only at completion. Its status is all it gives.
+#   - The container log ("segment N/M", "Generated audio clip") was the source until the
+#     operator left the docker group on 2026-10-20 (it is root-equivalent). Reading it now
+#     needs sudo; a poller doing so got "permission denied", saw no progress, and would have
+#     sent a false "may be wedged" on every run over STALL_SECS.
+#   - podcast-creator writes each clip to <PODCASTS_DIR>/episodes/<uuid>/clips/NNNN.mp3 as it
+#     is synthesised (world-readable, bind-mounted from the container). outline.json and
+#     transcript.json are written at the end only, so there is no per-segment signal: the
+#     outline/transcript phase counts as one stretch, which is short now that Claude writes.
 #
-# `--since "${START_TS}"`, NOT a fixed window. Fixed 30m/60m windows read log
-# lines emitted BEFORE this poller existed, so a fresh poller reports the
-# PREVIOUS episode's progress as its own until its job writes a first segment
-# line. Observed 2026-08-17: a poller started at 17:23:21 announced
-# "segment 5/7" one second later and sent that to Signal, while its job had not
-# even finished generating an outline — 5/7 was the position of the job that had
-# just been killed. Mid-run readings were correct; only the startup window lied,
-# which is the worst case, since that is the reading a user takes as
-# confirmation the job started properly.
-#
-# docker's --since accepts a Unix timestamp, so START_TS (set at line ~50) is a
-# drop-in. It also makes the "attributing another job's progress to this one"
-# guard below actually hold, rather than relying on jobs never overlapping.
-current_segment() {
-    command -v docker >/dev/null 2>&1 || return 0
-    docker logs --since "${START_TS}" "${CONTAINER}" 2>&1 \
-        | grep -oE 'segment [0-9]+/[0-9]+' | tail -1
+# The directory name is a fresh uuid with no job id, so the episode is the newest directory
+# created since this poller started (less a slack for a worker that picked the job up before
+# the poller launched). Same caveat the log had: two concurrent generations would be
+# indistinguishable, and one runs at a time in practice. Ignoring older directories is what
+# stops a fresh poller reporting the previous episode's clips as its own (the 2026-08-17
+# "segment 5/7" bug, which was the log-window version of this).
+EPISODE_DIR=""
+find_episode_dir() {
+    [ -n "${EPISODE_DIR}" ] && return 0
+    local d
+    d="$(find "${PODCASTS_DIR}/episodes" -mindepth 1 -maxdepth 1 -type d \
+            -newermt "@$(( START_TS - 120 ))" -printf '%T@ %p\n' 2>/dev/null \
+         | sort -n | tail -1 | cut -d' ' -f2-)"
+    [ -n "${d}" ] && EPISODE_DIR="${d}" && log "episode directory: ${d}"
 }
 
-segment_total() {
-    command -v docker >/dev/null 2>&1 || return 0
-    docker logs --since "${START_TS}" "${CONTAINER}" 2>&1 \
-        | grep -oE 'Generated outline with [0-9]+ segments' | tail -1 | grep -oE '[0-9]+'
-}
-
-# Transcript segments are only HALF the job. Once the last transcript is written
-# the run moves to audio synthesis, which emits "Generated audio clip" per clip
-# and no further "segment N/M" lines at all. A stall detector watching only
-# segments is therefore guaranteed to cry wolf on every run whose synthesis
-# phase exceeds STALL_SECS -- which is every VibeVoice run, since VibeVoice is
-# roughly 2x Kokoro and synthesis is the long phase.
-#
-# Observed 2026-08-17: a healthy VibeVoice run was reported as "hasn't advanced
-# past segment 7/7 in 25 min -- it may be wedged" while it was steadily
-# producing one audio clip a minute. The episode completed normally 40 minutes
-# later. Counting clips as progress is what makes the stall warning mean
-# something.
+# Call find_episode_dir in the loop itself, not inside $(...): a subshell's EPISODE_DIR is lost.
 audio_clips_done() {
-    command -v docker >/dev/null 2>&1 || return 0
-    docker logs --since "${START_TS}" "${CONTAINER}" 2>&1 \
-        | grep -c 'Generated audio clip'
+    [ -n "${EPISODE_DIR}" ] || return 0
+    find "${EPISODE_DIR}/clips" -maxdepth 1 -name '*.mp3' 2>/dev/null | wc -l
 }
 
 # Interval schedule: tight early so an immediate failure is caught fast, then
@@ -241,9 +224,8 @@ interval_for() {
 log "watching ${JOB_ID} (${EPISODE_NAME}) -> ${DELIVER_TARGET}"
 
 consecutive_errors=0
-last_segment=""
-last_segment_change="${START_TS}"
-announced_total=0
+last_clips=0
+last_progress="${START_TS}"
 warned_stall=0
 warned_soft=0
 
@@ -339,8 +321,8 @@ print(e, file=sys.stderr)
     esac
 
     # ── Progress / stall tracking ────────────────────────────────────────
-    # Only trust the container log once the API has actually confirmed this job
-    # exists. The log lines carry no job id, so on a bogus job id they describe
+    # Only trust the episode directory once the API has actually confirmed this job
+    # exists. It carries no job id, so on a bogus job id it describes
     # whatever OTHER episode is generating — a test with a mistyped id happily
     # announced "7 segments" for a job that did not exist. One generation runs
     # at a time in practice, but attributing another job's progress to this one
@@ -350,52 +332,24 @@ print(e, file=sys.stderr)
         continue
     fi
 
-    seg="$(current_segment)"
-    if [ -n "${seg}" ] && [ "${seg}" != "${last_segment}" ]; then
-        log "progress: ${seg}"
-        last_segment="${seg}"
-        last_segment_change="${now}"
-        warned_stall=0
-        [ "${PROGRESS_PINGS}" = "1" ] && notify "\"${EPISODE_NAME}\": ${seg}"
-    fi
-
-    # Audio synthesis counts as progress too -- see audio_clips_done() above.
-    # Logged, not pushed to Signal: a 7-segment two-speaker episode is dozens of
-    # clips, and a notification each would be worse than saying nothing.
+    # Logged, not pushed to Signal: a two-speaker episode is a hundred-odd clips.
+    find_episode_dir
     clips="$(audio_clips_done)"
-    if [ -n "${clips}" ] && [ "${clips}" -gt "${last_clips:-0}" ] 2>/dev/null; then
+    if [ -n "${clips}" ] && [ "${clips}" -gt "${last_clips}" ] 2>/dev/null; then
         log "progress: ${clips} audio clip(s) synthesised"
         last_clips="${clips}"
-        last_segment_change="${now}"
+        last_progress="${now}"
         warned_stall=0
     fi
 
-    # One up-front message with the real shape of the job. The podcast-workflow
-    # skill advertises 15-25 min; a 7-segment Kokoro episode took 39 min here
-    # and VibeVoice 72.5 (docs/07 §9.11). The range below spans both, and is
-    # sized for VibeVoice at the top end -- tighten it once Kokoro runs have
-    # been timed. Telling the user the segment count beats a wrong ETA.
-    if [ "${announced_total}" -eq 0 ]; then
-        total="$(segment_total)"
-        if [ -n "${total}" ]; then
-            announced_total=1
-            notify "Podcast \"${EPISODE_NAME}\" is generating — ${total} segments. Roughly 3-4 min per segment on this box plus audio synthesis, so expect ~$(( total * 4 ))-$(( total * 9 )) min. I'll message you when it's ready."
-        fi
-    fi
-
-    if [ $((now - last_segment_change)) -ge "${STALL_SECS}" ] && [ "${warned_stall}" -eq 0 ]; then
+    if [ $((now - last_progress)) -ge "${STALL_SECS}" ] && [ "${warned_stall}" -eq 0 ]; then
         warned_stall=1
-        # Name the phase. "hasn't advanced past segment 7/7" is meaningless once
-        # transcripts are done -- it reads as wedged when the job has simply
-        # moved on to synthesis.
-        if [ "${last_clips:-0}" -gt 0 ]; then
+        if [ "${last_clips}" -gt 0 ]; then
             where="audio synthesis (${last_clips} clips done)"
-        elif [ -n "${last_segment}" ]; then
-            where="transcript ${last_segment}"
         else
-            where="outline generation"
+            where="the outline and transcript (no audio yet)"
         fi
-        notify "Podcast \"${EPISODE_NAME}\" hasn't advanced past ${where} in $((STALL_SECS / 60)) min. It may be wedged — still watching. Logs: docker logs --tail 50 ${CONTAINER}"
+        notify "Podcast \"${EPISODE_NAME}\" hasn't advanced past ${where} in $((STALL_SECS / 60)) min. It may be wedged — still watching. Logs: sudo docker logs --tail 50 open-notebook"
     fi
 
     # ── Ceilings ─────────────────────────────────────────────────────────

@@ -109,7 +109,7 @@ def call(method, path, body=None, timeout=60, retries=4):
                 continue
             die(f"{method} {path} -> HTTP {e.code}: {detail}")
         except urllib.error.URLError as e:
-            die(f"{method} {path} -> {e.reason} (is Open Notebook up? docker ps | grep open-notebook)")
+            die(f"{method} {path} -> {e.reason} (is Open Notebook up? curl -s localhost:5055/health)")
 
 
 # The poller unit's Description carries the episode name, so a second launch for the

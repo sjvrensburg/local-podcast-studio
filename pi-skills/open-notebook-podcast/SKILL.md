@@ -121,7 +121,7 @@ Do not wait for it.
 The script says so. Tell the user and stop. There is no fallback voice on purpose: the
 operator would rather have a failure than an espeak episode (2026-09-24), so do not synthesise
 one with espeak, piper or anything else, and do not offer to. Check with
-`curl -s localhost:5055/health` and `docker ps | grep open-notebook`.
+`curl -s localhost:5055/health` (the operator can run `sudo docker ps | grep open-notebook`; agents cannot, as the operator is not in the docker group since 2026-10-20).
 
 ## Useful facts
 
