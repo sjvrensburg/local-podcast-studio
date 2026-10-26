@@ -273,11 +273,11 @@ while true; do
         # ── Re-voice (on the EVO-X3, since 2026-10-18) ──
         # Open Notebook voices the episode with Kokoro; where halo-prep's drama-revoice exists,
         # the finished transcript is rendered again in locked voices and THAT file is delivered:
-        # with Fish S2-Pro since 2026-10-26 (Drama 3 before, and now its second chance; halo-prep
-        # docs/19 §5). Kokoro's file stays the fallback: if the re-voice fails, the Kokoro audio
-        # is sent with a note. S2-Pro takes about as long as the episode lasts. The engine that
-        # rendered is in the tool's "engine:" line and in the .log beside its MP3, since only
-        # three lines are logged here. PODCAST_DRAMA=0 turns it off.
+        # with Fish S2-Pro since 2026-10-26 (Fish Drama 3 before, since removed; halo-prep docs/19
+        # §5). Kokoro's file is the fallback: if the re-voice fails, the Kokoro audio is sent with
+        # a note. S2-Pro takes about as long as the episode lasts. The tool's full output is in
+        # the .log beside its MP3, since only three lines are logged here. PODCAST_DRAMA=0 turns
+        # it off.
         if [ "${PODCAST_DRAMA:-1}" = "1" ] && [ -x "${DRAMA_REVOICE}" ] && [ -f "${audio_path}" ]; then
             notify "🎙️ \"${EPISODE_NAME}\": the script is done. Re-voicing it now, which takes about as long as the episode lasts. I'll send it when it's ready."
             drama_out="$("${DRAMA_REVOICE}" --by-audio "${rel_path}" 2>&1)"; drama_rc=$?
