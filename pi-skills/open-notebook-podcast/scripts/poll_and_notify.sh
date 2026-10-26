@@ -43,7 +43,7 @@ HARD_CEILING_SECS="${HARD_CEILING_SECS:-21600}"
 # took ~1-2.5 min before the first clip (four episodes, 2026-10-16/17) and clips then arrive
 # every few seconds, so 25 min is generous; it was sized for the Ornith era's 3-4 min segments.
 STALL_SECS="${STALL_SECS:-1500}"
-# The Drama 3 re-voice tool (see the "completed" branch below). Like the lease helper, a path
+# The re-voice tool (see the "completed" branch below; still named drama-revoice). Like the lease helper, a path
 # into halo-prep, overridable; a missing or non-executable file means Kokoro only.
 DRAMA_REVOICE="${DRAMA_REVOICE:-${HOME}/Projects/halo-prep/scripts/drama-revoice.py}"
 
@@ -270,24 +270,27 @@ while true; do
             exit 0
         fi
         audio_path="${PODCASTS_DIR}/${rel_path}"
-        # ── Drama 3 re-voice (on the EVO-X3, since 2026-10-18) ──
+        # ── Re-voice (on the EVO-X3, since 2026-10-18) ──
         # Open Notebook voices the episode with Kokoro; where halo-prep's drama-revoice exists,
-        # the finished transcript is rendered again with Fish Drama 3 in locked voices and THAT
-        # file is delivered. Kokoro's file stays the fallback: if the re-voice fails (not enough
-        # memory, a turn that keeps running away), the Kokoro audio is sent with a note. It adds
-        # roughly two thirds of the episode's length. PODCAST_DRAMA=0 turns it off.
+        # the finished transcript is rendered again in locked voices and THAT file is delivered:
+        # with Fish S2-Pro since 2026-10-26 (Fish Drama 3 before, since removed; halo-prep docs/19
+        # §5). Kokoro's file is the fallback: if the re-voice fails, the Kokoro audio is sent with
+        # a note. S2-Pro takes about as long as the episode lasts. The tool's full output is in
+        # the .log beside its MP3, since only three lines are logged here. PODCAST_DRAMA=0 turns
+        # it off.
         if [ "${PODCAST_DRAMA:-1}" = "1" ] && [ -x "${DRAMA_REVOICE}" ] && [ -f "${audio_path}" ]; then
-            notify "🎙️ \"${EPISODE_NAME}\": the script is done. Rendering it with Drama 3 voices now, which takes about two thirds of the episode's length. I'll send it when it's ready."
+            notify "🎙️ \"${EPISODE_NAME}\": the script is done. Re-voicing it now, which takes about as long as the episode lasts. I'll send it when it's ready."
             drama_out="$("${DRAMA_REVOICE}" --by-audio "${rel_path}" 2>&1)"; drama_rc=$?
             log "drama-revoice rc=${drama_rc}: $(printf '%s' "${drama_out}" | tail -n 3 | tr '\n' ' ')"
             drama_path="$(printf '%s' "${drama_out}" | sed -n 's/^wrote \(.*\) in [0-9]* s$/\1/p' | tail -n1)"
+            engine="$(printf '%s' "${drama_out}" | sed -n 's/^engine: //p' | tail -n1)"
             if [ "${drama_rc}" -eq 0 ] && [ -f "${drama_path}" ]; then
                 notify "🎙️ Your podcast \"${EPISODE_NAME}\" is ready."
                 notify "MEDIA:${drama_path}"
-                log "done in $(( ($(date +%s) - START_TS) / 60 ))m (Drama 3)"
+                log "done in $(( ($(date +%s) - START_TS) / 60 ))m (${engine:-re-voice})"
                 exit 0
             fi
-            notify "The Drama 3 render of \"${EPISODE_NAME}\" failed ($(printf '%s' "${drama_out}" | tail -n1 | cut -c1-200)). Sending the Kokoro version instead."
+            notify "The re-voice of \"${EPISODE_NAME}\" failed ($(printf '%s' "${drama_out}" | tail -n1 | cut -c1-200)). Sending the Kokoro version instead."
         fi
         notify "🎙️ Your podcast \"${EPISODE_NAME}\" is ready."
         if [ -f "${audio_path}" ]; then
